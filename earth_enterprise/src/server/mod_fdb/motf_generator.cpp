@@ -22,6 +22,8 @@
 #include <vrtdataset.h>
 #include <memdataset.h>
 
+#include <http_log.h>
+
 #include "common/khTileAddr.h"
 #include "common/khConstants.h"
 #include "common/serverdb/serverdbReader.h"
@@ -167,7 +169,7 @@ void CreateDstTransform(const MotfParams &motf_params,
   (*dst_geo_transform)[5] = (min_dst_y - max_dst_y) / kMotfTileSize;
 }
 
-GDALDataset* GetSrcTile(const MotfParams &motf_params,
+GDALDataset* GetSrcTile(request_rec* r, const MotfParams &motf_params,
                        int levelup,
                        bool* has_alpha,
                        const UpsampledTile &upsampled_tile,
@@ -196,10 +198,27 @@ GDALDataset* GetSrcTile(const MotfParams &motf_params,
   GDALDataset* hdata_ds = NULL;  // Define source bands(uncut) GDAL dataset
   if (non_pb_jpeg) {
     hdata_ds = geGdalVSI::VsiGdalOpenInternalWrap(&vsidatafile, buf);
+    if (hdata_ds == NULL) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                      "hdata_ds was NULL when reading %s from ReadBuffer buf.", vsidatafile.c_str());
+        return NULL;
+    } else {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                      "hdata_ds was NOT NULL when reading %s from ReadBuffer buf.", vsidatafile.c_str());
+    }
   // Create GDAL dataset from EarthImageryPacket protobuf.
   } else if (imagery_pb.ParseFromString(buf)) {
     const std::string& image_data = imagery_pb.image_data();
     hdata_ds =  geGdalVSI::VsiGdalOpenInternalWrap(&vsidatafile, image_data);
+    if (hdata_ds == NULL) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                      "hdata_ds was NULL when reading %s from imagery_pb.ParseFromString", vsidatafile.c_str());
+        return NULL;
+    } else {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                      "hdata_ds was NOT NULL when reading %s from imagery_pb.ParseFromString", vsidatafile.c_str());
+    }
+
   // Return NULL if source data is not valid EarthImageryPacket protobuf.
   } else {
     return NULL;
@@ -350,8 +369,18 @@ void WarpData(const MotfParams &motf_params, int levelup,
   // Get the first source PC tile which makes up the mercator mosaic
   // and initialize the warp process including the destination dataset.
   GDALDataset* hsrctile1_ds;
-  hsrctile1_ds = GetSrcTile(motf_params, levelup, &has_alpha,
+  hsrctile1_ds = GetSrcTile(r, motf_params, levelup, &has_alpha,
                            upsampled_tiles[0], reader, arg_map);
+  if (hsrctile1_ds == NULL) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                      "hsrctile1_ds was NULL in WarpData first call to GetSrcTile");
+      return;
+  } else {
+      ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                    "hsrctile1_ds was not null in first call to GetSrcTile.");
+
+  }
+
   // Make destination data type same as source data's first band.
   GDALDataType data_type =
       GDALGetRasterDataType(GDALGetRasterBand(hsrctile1_ds, 1));
@@ -405,8 +434,16 @@ void WarpData(const MotfParams &motf_params, int levelup,
   // TODO: Move mosaic block to separate function for readability.
   for (int i = 1; i < num_tiles; i++) {
     // Get each source pc tile which makes up the mercator mosaic
-    hsrctile_ds = GetSrcTile(motf_params, levelup, &has_alpha,
-                             upsampled_tiles[i], reader, arg_map);
+      ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                        "Calling GetSrcTile for tile %d", i);
+      hsrctile_ds = GetSrcTile(r, motf_params, levelup, &has_alpha,
+                           upsampled_tiles[0], reader, arg_map);
+      if (hsrctile_ds == NULL) {
+          ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+                        "hsrctile_ds was NULL in WarpData second call to GetSrcTile for %d", i);
+
+          continue;
+      }
     // Add the alpha band to the destination tile if any of the source tiles
     // contain the alpha band.
     assert(GDALGetRasterCount(hsrctile_ds) == 3 ||
